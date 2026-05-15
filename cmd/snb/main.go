@@ -43,7 +43,7 @@ func main() {
 
 	err := bridge.Connect(pidA, hostA, "eth0", mtu)
 	if err != nil {
-		log.Fatalf("Failed to connect A: %v", err)
+		log.Fatalf(`Failed to connect A: %v`, err) //nolint: gocritic
 	}
 
 	err = bridge.Connect(pidB, hostB, "eth0", mtu)

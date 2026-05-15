@@ -11,4 +11,6 @@ var (
 	ErrNamespaceSwitch  = errors.New("failed to switch network namespace")
 	ErrFailedToCreate   = errors.New("failed to create veth pair")
 	ErrFailedToFindPeer = errors.New("failed to find peer interface")
+	ErrFailedToSetMTU   = errors.New("failed to set MTU")
+	ErrMTUOverflow      = errors.New("MTU overflow")
 )

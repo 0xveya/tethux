@@ -5,12 +5,18 @@ import (
 	"runtime"
 
 	"github.com/0xveya/sme/internal/libsnb/errs"
+	"github.com/0xveya/sme/internal/libsnb/models"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 )
 
-func (b *Bridge) Connect(pid int, hostSideName string, containerSideName string, mtu int) error {
-	err := SetupLinkWithNames(pid, hostSideName, containerSideName, mtu)
+func (b *Bridge) Connect(pid int, hostSideName, containerSideName string, mtu int) error {
+	err := SetupLinkWithNames(models.SetupLinkParams{
+		SourcePID: pid,
+		HostName:  hostSideName,
+		Container: containerSideName,
+		MTU:       mtu,
+	})
 	if err != nil {
 		return err
 	}
@@ -26,47 +32,56 @@ func (b *Bridge) Connect(pid int, hostSideName string, containerSideName string,
 		return errs.ErrLinkNotFound
 	}
 
-	netlink.LinkSetMTU(link, mtu)
+	setMtuErr := netlink.LinkSetMTU(link, mtu)
+	if setMtuErr != nil {
+		return fmt.Errorf("%w: failed to set MTU for %s: %w", errs.ErrFailedToSetMTU, containerSideName, setMtuErr)
+	}
 
 	return netlink.LinkSetUp(link)
 }
 
-func SetupLinkWithNames(pid int, hostName string, containerName string, mtu int) error {
+func SetupLinkWithNames(params models.SetupLinkParams) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	veth := &netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
-			Name: hostName,
-			MTU:  mtu,
+			Name: params.HostName,
+			MTU:  params.MTU,
 		},
-		PeerName: containerName,
+		PeerName: params.Container,
 	}
 
 	if err := netlink.LinkAdd(veth); err != nil {
-		return fmt.Errorf("%w: failed to create veth pair (%s <-> %s): %v", errs.ErrFailedToCreate, hostName, containerName, err)
+		return fmt.Errorf("%w: failed to create veth pair (%s <-> %s): %w", errs.ErrFailedToCreate, params.HostName, params.Container, err)
 	}
 
-	peerLink, err := netlink.LinkByName(containerName)
+	peerLink, err := netlink.LinkByName(params.Container)
 	if err != nil {
-		return fmt.Errorf("%w: failed to find peer interface: %v", errs.ErrFailedToFindPeer, err)
+		return fmt.Errorf("%w: failed to find peer interface: %w", errs.ErrFailedToFindPeer, err)
 	}
 
-	netlink.LinkSetMTU(peerLink, mtu)
+	setMtuErr := netlink.LinkSetMTU(peerLink, params.MTU)
+	if setMtuErr != nil {
+		return fmt.Errorf("%w: failed to set MTU for %s: %w", errs.ErrFailedToSetMTU, params.Container, setMtuErr)
+	}
 
-	targetNs, err := netns.GetFromPid(pid)
+	targetNs, err := netns.GetFromPid(params.SourcePID)
 	if err != nil {
-		return fmt.Errorf("%w: failed to get namespace for PID %d: %v", errs.ErrNamespaceFailed, pid, err)
+		return fmt.Errorf("%w: failed to get namespace for PID %d: %w", errs.ErrNamespaceFailed, params.SourcePID, err)
 	}
 	defer targetNs.Close()
 
-	if err := netlink.LinkSetNsFd(peerLink, int(targetNs)); err != nil {
-		return fmt.Errorf("%w: failed to move %s to PID %d: %v", errs.ErrNamespaceFailed, containerName, pid, err)
+	if setLintErr := netlink.LinkSetNsFd(peerLink, int(targetNs)); setLintErr != nil {
+		return fmt.Errorf("%w: failed to move %s to PID %d: %w", errs.ErrNamespaceFailed, params.Container, params.SourcePID, setLintErr)
 	}
 
-	hostLink, err := netlink.LinkByName(hostName)
+	hostLink, err := netlink.LinkByName(params.HostName)
 	if err == nil {
-		netlink.LinkSetUp(hostLink)
+		setLinkUpErr := netlink.LinkSetUp(hostLink)
+		if setLinkUpErr != nil {
+			return fmt.Errorf("%w: failed to set up %s: %w", errs.ErrFailedToSetMTU, params.HostName, setLinkUpErr)
+		}
 	}
 
 	return nil
@@ -75,7 +90,10 @@ func SetupLinkWithNames(pid int, hostName string, containerName string, mtu int)
 func CleanupLink(hostName string) {
 	link, err := netlink.LinkByName(hostName)
 	if err == nil {
-		netlink.LinkDel(link)
+		delErr := netlink.LinkDel(link)
+		if delErr != nil {
+			fmt.Printf("failed to delete link %s: %v\n", hostName, delErr)
+		}
 	}
 }
 
@@ -90,14 +108,23 @@ func EnterNamespace(pid int) (func(), error) {
 
 	targetNS, err := netns.GetFromPid(pid)
 	if err != nil {
-		hostNS.Close()
+		closedErr := hostNS.Close()
+		if closedErr != nil {
+			fmt.Printf("failed to close host namespace: %v\n", closedErr)
+		}
 		runtime.UnlockOSThread()
 		return nil, err
 	}
 
 	if err := netns.Set(targetNS); err != nil {
-		targetNS.Close()
-		hostNS.Close()
+		closeTargetNSErr := targetNS.Close()
+		if closeTargetNSErr != nil {
+			fmt.Printf("failed to close target namespace: %v\n", closeTargetNSErr)
+		}
+		closedErr := hostNS.Close()
+		if closedErr != nil {
+			fmt.Printf("failed to close host namespace: %v\n", closedErr)
+		}
 		runtime.UnlockOSThread()
 		return nil, err
 	}
@@ -107,6 +134,9 @@ func EnterNamespace(pid int) (func(), error) {
 		defer hostNS.Close()
 		defer targetNS.Close()
 
-		netns.Set(hostNS)
+		setNSErr := netns.Set(hostNS)
+		if setNSErr != nil {
+			fmt.Printf("failed to switch back to host namespace: %v\n", setNSErr)
+		}
 	}, nil
 }

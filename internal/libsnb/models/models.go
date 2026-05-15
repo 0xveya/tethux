@@ -15,3 +15,10 @@ type Link struct {
 	MTU       int
 	State     LinkState
 }
+
+type SetupLinkParams struct {
+	SourcePID int
+	HostName  string
+	Container string
+	MTU       int
+}

@@ -1,9 +1,11 @@
 package libsnb
 
 import (
+	"math"
 	"net"
 	"sync"
 
+	"github.com/0xveya/sme/internal/libsnb/errs"
 	"github.com/google/gopacket/pcap"
 	"github.com/vishvananda/netns"
 )
@@ -25,8 +27,11 @@ type NSManager struct {
 }
 
 func (b *Bridge) Bind(ifaceName string, mtu int) error {
-	// snaplen: mtu + Ethernet + VLAN + padding
-	snaplen := int32(mtu + 32)
+	// snaplen: mtu + ethernet + vlan + padding
+	if mtu+32 > math.MaxInt32 {
+		return errs.ErrMTUOverflow
+	}
+	snaplen := int32(mtu + 32) //#nosec G115 ts alr checked
 
 	handle, err := pcap.OpenLive(ifaceName, snaplen, true, pcap.BlockForever)
 	if err != nil {
