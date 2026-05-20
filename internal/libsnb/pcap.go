@@ -2,20 +2,31 @@ package libsnb
 
 import "github.com/google/gopacket/pcap"
 
-type PcapIO struct {
-	Handle *pcap.Handle
+type PcapPort struct {
+	id     string
+	mtu    int
+	ifName string
+	handle *pcap.Handle
 }
 
-func (p *PcapIO) ReadPacket() ([]byte, error) {
-	data, _, err := p.Handle.ReadPacketData()
+func (p *PcapPort) ID() string {
+	return p.id
+}
+
+func (p *PcapPort) MTU() int {
+	return p.mtu
+}
+
+func (p *PcapPort) ReadFrame() (Frame, error) {
+	data, _, err := p.handle.ReadPacketData()
 	return data, err
 }
 
-func (p *PcapIO) WritePacket(data []byte) error {
-	return p.Handle.WritePacketData(data)
+func (p *PcapPort) WriteFrame(frame Frame) error {
+	return p.handle.WritePacketData(frame)
 }
 
-func (p *PcapIO) Close() error {
-	p.Handle.Close()
+func (p *PcapPort) Close() error {
+	p.handle.Close()
 	return nil
 }

@@ -2,15 +2,25 @@ package libsnb
 
 import "net"
 
-type UDPIO struct {
-	Conn       *net.UDPConn
-	RemoteAddr *net.UDPAddr
+type UDPPort struct {
+	id         string
+	mtu        int
+	conn       *net.UDPConn
+	remoteAddr *net.UDPAddr
 }
 
-func (u *UDPIO) ReadPacket() ([]byte, error) {
+func (u *UDPPort) ID() string {
+	return u.id
+}
+
+func (u *UDPPort) MTU() int {
+	return u.mtu
+}
+
+func (u *UDPPort) ReadFrame() (Frame, error) {
 	buf := make([]byte, 65536)
 
-	n, _, err := u.Conn.ReadFrom(buf)
+	n, _, err := u.conn.ReadFromUDP(buf)
 	if err != nil {
 		return nil, err
 	}
@@ -18,11 +28,11 @@ func (u *UDPIO) ReadPacket() ([]byte, error) {
 	return buf[:n], nil
 }
 
-func (u *UDPIO) WritePacket(data []byte) error {
-	_, err := u.Conn.WriteTo(data, u.RemoteAddr)
+func (u *UDPPort) WriteFrame(frame Frame) error {
+	_, err := u.conn.WriteToUDP(frame, u.remoteAddr)
 	return err
 }
 
-func (u *UDPIO) Close() error {
-	return u.Conn.Close()
+func (u *UDPPort) Close() error {
+	return u.conn.Close()
 }

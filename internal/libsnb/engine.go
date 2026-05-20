@@ -1,259 +1,429 @@
 package libsnb
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"fmt"
-	"math"
 	"net"
-	"os"
-	"strings"
+	"sort"
 	"sync"
-	"syscall"
 	"time"
-
-	"github.com/google/gopacket/pcap"
-	"github.com/vishvananda/netns"
-
-	"github.com/0xveya/sme/internal/libsnb/errs"
 )
 
-type PacketIO interface {
-	ReadPacket() ([]byte, error)
-	WritePacket([]byte) error
+const ethernetHeaderLen = 14
+
+type Frame = []byte
+
+type Port interface {
+	ID() string
+	MTU() int
+	ReadFrame() (Frame, error)
+	WriteFrame(Frame) error
 	Close() error
 }
 
-// i shall consider improving this so pcap can run over udp
+type PortMiddleware func(Port) Port
 
-type Endpoint struct {
-	Name       string
-	ID         int // unsued for now will be useful later maybe once a uuid idk
-	MTU        int
-	IO         PacketIO
-	RemoteAddr net.Addr
+type CaptureSink interface {
+	Capture(CapturedFrame)
 }
 
-type Bridge struct {
-	Connections map[string]*Endpoint
-	mu          sync.RWMutex
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+type CapturedFrame struct {
+	PortID    string
+	Direction FrameDirection
+	Frame     Frame
+	Time      time.Time
 }
 
-type NSManager struct {
-	HostNS    netns.NsHandle
-	TargetPID int
+type FrameDirection string
+
+const (
+	FrameIngress FrameDirection = "ingress"
+	FrameEgress  FrameDirection = "egress"
+)
+
+type EventType string
+
+const (
+	EventPortAttached EventType = "port_attached"
+	EventPortRemoved  EventType = "port_removed"
+	EventPortClosed   EventType = "port_closed"
+	EventFrameIngress EventType = "frame_ingress"
+	EventFrameEgress  EventType = "frame_egress"
+	EventFrameDropped EventType = "frame_dropped"
+	EventFDBLearned   EventType = "fdb_learned"
+	EventSwitchStart  EventType = "switch_start"
+	EventSwitchStop   EventType = "switch_stop"
+)
+
+type Event struct {
+	Type       EventType
+	PortID     string
+	TargetPort string
+	Frame      Frame
+	MAC        net.HardwareAddr
+	Time       time.Time
+	Err        error
 }
 
-func NewBridge() *Bridge {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &Bridge{
-		Connections: make(map[string]*Endpoint),
-		ctx:         ctx,
-		cancel:      cancel,
+type EventHandler func(Event)
+
+type SwitchOptions struct {
+	DisableUnknownUnicastFlood bool
+}
+
+type Switch struct {
+	mu       sync.RWMutex
+	ports    map[string]Port
+	fdb      map[string]string
+	captures []CaptureSink
+	handlers map[uint64]EventHandler
+	order    []string
+
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	started  bool
+	nextHook uint64
+	opts     SwitchOptions
+}
+
+func NewSwitch(opts SwitchOptions) *Switch {
+	return &Switch{
+		ports:    make(map[string]Port),
+		fdb:      make(map[string]string),
+		handlers: make(map[uint64]EventHandler),
+		order:    make([]string, 0),
+		opts:     opts,
 	}
 }
 
-func (b *Bridge) Bind(ifaceName string, mtu int, usePcap, immediateMode bool) error {
-	if mtu+32 > math.MaxInt32 {
-		return errs.ErrMTUOverflow
-	}
-	snaplen := int32(mtu + 32) // #nosec G115 ts alr checked
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.Connections == nil {
-		b.Connections = make(map[string]*Endpoint)
+func (s *Switch) AttachPort(p Port) error {
+	s.mu.Lock()
+	if _, exists := s.ports[p.ID()]; exists {
+		s.mu.Unlock()
+		return errors.New("port already attached")
 	}
 
-	if after, ok := strings.CutPrefix(ifaceName, "udp://"); ok {
-		remoteAddrStr := after
-		remoteAddr, errResolve := net.ResolveUDPAddr("udp", remoteAddrStr)
-		if errResolve != nil {
-			return fmt.Errorf("failed to resolve worker address: %w", errResolve)
-		}
+	s.ports[p.ID()] = p
+	s.order = append(s.order, p.ID())
 
-		udpConn, errListen := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-		if errListen != nil {
-			return fmt.Errorf("failed to open transport socket: %w", errListen)
-		}
-
-		b.Connections[ifaceName] = &Endpoint{
-			Name: ifaceName,
-			IO: &UDPIO{
-				Conn:       udpConn,
-				RemoteAddr: remoteAddr,
-			},
-			MTU:        mtu,
-			RemoteAddr: remoteAddr,
-		}
-		return nil
+	if s.started {
+		s.startReaderLocked(p)
 	}
 
-	if usePcap {
-		inactive, errInactive := pcap.NewInactiveHandle(ifaceName)
-		if errInactive != nil {
-			return fmt.Errorf("failed to create inactive handle: %w", errInactive)
-		}
-		defer inactive.CleanUp()
+	s.mu.Unlock()
+	s.emit(Event{Type: EventPortAttached, PortID: p.ID(), Time: time.Now()})
 
-		if errMode := inactive.SetImmediateMode(immediateMode); errMode != nil {
-			return fmt.Errorf("failed to set immediate mode: %w", errMode)
-		}
-		if errSnap := inactive.SetSnapLen(int(snaplen)); errSnap != nil {
-			return fmt.Errorf("failed to set snaplen: %w", errSnap)
-		}
-		if errPromisc := inactive.SetPromisc(true); errPromisc != nil {
-			return fmt.Errorf("failed to set promisc: %w", errPromisc)
-		}
-		if errTimeout := inactive.SetTimeout(1 * time.Millisecond); errTimeout != nil {
-			return fmt.Errorf("failed to set timeout: %w", errTimeout)
-		}
-
-		handle, errActivate := inactive.Activate()
-		if errActivate != nil {
-			return fmt.Errorf("failed to activate handle: %w", errActivate)
-		}
-		localIP, _ := net.ResolveIPAddr("ip", "127.0.0.1")
-
-		b.Connections[ifaceName] = &Endpoint{
-			Name:       ifaceName,
-			IO:         &PcapIO{Handle: handle},
-			MTU:        mtu,
-			RemoteAddr: localIP,
-		}
-		return nil
-	}
-
-	ifi, errIface := net.InterfaceByName(ifaceName)
-	if errIface != nil {
-		return fmt.Errorf("failed to find interface %s: %w", ifaceName, errIface)
-	}
-
-	packetProto := htons(syscall.ETH_P_ALL)
-
-	packetSock, errSock := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW, int(packetProto))
-	if errSock != nil {
-		return fmt.Errorf("failed to open raw packet socket: %w", errSock)
-	}
-
-	addr := &syscall.SockaddrLinklayer{
-		Protocol: packetProto,
-		Ifindex:  ifi.Index,
-	}
-	if errBind := syscall.Bind(packetSock, addr); errBind != nil {
-		closeErr := syscall.Close(packetSock)
-		if closeErr != nil {
-			return fmt.Errorf("failed to close socket: %w", closeErr)
-		}
-		return fmt.Errorf("failed to bind raw socket to interface %s: %w", ifaceName, errBind)
-	}
-
-	ptr, errHandle := handleSocket(packetSock)
-	if errHandle != nil {
-		return fmt.Errorf("failed to handle socket: %w", errHandle)
-	}
-	fileConn, errFile := net.FilePacketConn(os.NewFile(ptr, ifaceName))
-	if errFile != nil {
-		closeErr := syscall.Close(packetSock)
-		if closeErr != nil {
-			return fmt.Errorf("failed to close socket: %w", closeErr)
-		}
-		return fmt.Errorf("failed to convert descriptor to packet connection: %w", errFile)
-	}
-
-	b.Connections[ifaceName] = &Endpoint{
-		Name:       ifaceName,
-		MTU:        mtu,
-		IO:         &RawSocketIO{Conn: fileConn},
-		RemoteAddr: fileConn.LocalAddr(),
-	}
 	return nil
 }
 
-func (b *Bridge) Start(ifaceA, ifaceB string, mtu int) {
-	b.wg.Add(2)
-	go func() {
-		b.pipe(ifaceA, ifaceB, mtu)
-		b.wg.Done()
-	}()
-
-	go func() {
-		b.pipe(ifaceB, ifaceA, mtu)
-		b.wg.Done()
-	}()
-}
-
-func (b *Bridge) pipe(srcName, dstName string, mtu int) {
-	b.mu.RLock()
-	src := b.Connections[srcName]
-	dst := b.Connections[dstName]
-	b.mu.RUnlock()
-
-	if src == nil || dst == nil {
-		return
+func (s *Switch) RemovePort(id string) error {
+	s.mu.Lock()
+	p, ok := s.ports[id]
+	if !ok {
+		s.mu.Unlock()
+		return errors.New("port not found")
 	}
 
-	for {
-		select {
-		case <-b.ctx.Done():
-			return
-		default:
-			data, err := src.IO.ReadPacket()
+	delete(s.ports, id)
+	deleteFDBEntriesForPort(s.fdb, id)
+	s.order = removePortOrder(s.order, id)
+	s.mu.Unlock()
+
+	s.emit(Event{Type: EventPortRemoved, PortID: id, Time: time.Now()})
+
+	if err := p.Close(); err != nil {
+		return err
+	}
+
+	s.emit(Event{Type: EventPortClosed, PortID: id, Time: time.Now()})
+	return nil
+}
+
+func (s *Switch) Start() error {
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return nil
+	}
+
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.started = true
+
+	for _, id := range s.sortedPortIDsLocked() {
+		s.startReaderLocked(s.ports[id])
+	}
+
+	s.mu.Unlock()
+	s.emit(Event{Type: EventSwitchStart, Time: time.Now()})
+	return nil
+}
+
+func (s *Switch) Stop() error {
+	s.mu.Lock()
+	if !s.started {
+		s.mu.Unlock()
+		return nil
+	}
+
+	cancel := s.cancel
+	ports := make([]Port, 0, len(s.ports))
+	for _, id := range s.sortedPortIDsLocked() {
+		ports = append(ports, s.ports[id])
+	}
+	s.started = false
+	s.cancel = nil
+	s.ctx = nil
+	s.mu.Unlock()
+
+	s.emit(Event{Type: EventSwitchStop, Time: time.Now()})
+	cancel()
+	for _, p := range ports {
+		_ = p.Close()
+	}
+	s.wg.Wait()
+	return nil
+}
+
+func (s *Switch) OnEvent(handler EventHandler) func() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id := s.nextHook
+	s.nextHook++
+	s.handlers[id] = handler
+
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		delete(s.handlers, id)
+	}
+}
+
+func (s *Switch) AddCaptureSink(sink CaptureSink) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.captures = append(s.captures, sink)
+}
+
+func (s *Switch) startReaderLocked(p Port) {
+	ctx := s.ctx
+
+	s.wg.Go(func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			frame, err := p.ReadFrame()
 			if err != nil {
 				select {
-				case <-b.ctx.Done():
+				case <-ctx.Done():
 					return
 				default:
+					s.emit(Event{
+						Type:   EventFrameDropped,
+						PortID: p.ID(),
+						Time:   time.Now(),
+						Err:    err,
+					})
 					time.Sleep(10 * time.Millisecond)
 					continue
 				}
 			}
 
-			if len(data) > mtu+32 {
-				continue
-			}
+			s.processFrame(p.ID(), frame)
+		}
+	})
+}
 
-			if err := dst.IO.WritePacket(data); err != nil {
-				continue
-			}
+func (s *Switch) processFrame(srcID string, frame Frame) {
+	now := time.Now()
+	frameCopy := cloneFrame(frame)
+	s.capture(&CapturedFrame{PortID: srcID, Direction: FrameIngress, Frame: frameCopy, Time: now})
+	s.emit(Event{Type: EventFrameIngress, PortID: srcID, Frame: frameCopy, Time: now})
+
+	if len(frame) < ethernetHeaderLen {
+		s.emit(Event{
+			Type:   EventFrameDropped,
+			PortID: srcID,
+			Frame:  frameCopy,
+			Time:   time.Now(),
+			Err:    errors.New("frame too short"),
+		})
+		return
+	}
+
+	srcMAC := net.HardwareAddr(frame[6:12])
+	dstMAC := net.HardwareAddr(frame[0:6])
+
+	s.learn(srcMAC, srcID)
+	targets := s.egressPorts(srcID, dstMAC)
+	if len(targets) == 0 {
+		return
+	}
+
+	for _, target := range targets {
+		targetFrame := cloneFrame(frame)
+		if err := target.WriteFrame(targetFrame); err != nil {
+			s.emit(Event{
+				Type:       EventFrameDropped,
+				PortID:     srcID,
+				TargetPort: target.ID(),
+				Frame:      targetFrame,
+				Time:       time.Now(),
+				Err:        err,
+			})
+			continue
+		}
+
+		copied := cloneFrame(targetFrame)
+		s.capture(&CapturedFrame{PortID: target.ID(), Direction: FrameEgress, Frame: copied, Time: time.Now()})
+		s.emit(Event{
+			Type:       EventFrameEgress,
+			PortID:     srcID,
+			TargetPort: target.ID(),
+			Frame:      copied,
+			Time:       time.Now(),
+		})
+	}
+}
+
+func (s *Switch) learn(mac net.HardwareAddr, portID string) {
+	if len(mac) == 0 || isBroadcastMAC(mac) {
+		return
+	}
+
+	s.mu.Lock()
+	key := mac.String()
+	if current, ok := s.fdb[key]; ok && current == portID {
+		s.mu.Unlock()
+		return
+	}
+
+	s.fdb[key] = portID
+	s.mu.Unlock()
+	s.emit(Event{
+		Type:   EventFDBLearned,
+		PortID: portID,
+		MAC:    append(net.HardwareAddr(nil), mac...),
+		Time:   time.Now(),
+	})
+}
+
+func (s *Switch) egressPorts(srcID string, dstMAC net.HardwareAddr) []Port {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if isBroadcastMAC(dstMAC) || isMulticastMAC(dstMAC) {
+		return s.allPortsExceptLocked(srcID)
+	}
+
+	if portID, ok := s.fdb[dstMAC.String()]; ok {
+		if port, exists := s.ports[portID]; exists && portID != srcID {
+			return []Port{port}
+		}
+	}
+
+	if s.opts.DisableUnknownUnicastFlood {
+		return nil
+	}
+
+	return s.allPortsExceptLocked(srcID)
+}
+
+func (s *Switch) allPortsExceptLocked(srcID string) []Port {
+	ids := append([]string(nil), s.order...)
+	sort.Strings(ids)
+
+	ports := make([]Port, 0, len(ids))
+	for _, id := range ids {
+		if id == srcID {
+			continue
+		}
+		if port, ok := s.ports[id]; ok {
+			ports = append(ports, port)
+		}
+	}
+
+	return ports
+}
+
+func (s *Switch) sortedPortIDsLocked() []string {
+	ids := append([]string(nil), s.order...)
+	sort.Strings(ids)
+	return ids
+}
+
+func (s *Switch) capture(frame *CapturedFrame) {
+	s.mu.RLock()
+	sinks := append([]CaptureSink(nil), s.captures...)
+	s.mu.RUnlock()
+
+	for _, sink := range sinks {
+		sink.Capture(CapturedFrame{
+			PortID:    frame.PortID,
+			Direction: frame.Direction,
+			Frame:     cloneFrame(frame.Frame),
+			Time:      frame.Time,
+		})
+	}
+}
+
+func (s *Switch) emit(event *Event) {
+	s.mu.RLock()
+	handlers := make([]EventHandler, 0, len(s.handlers))
+	for _, handler := range s.handlers {
+		handlers = append(handlers, handler)
+	}
+	s.mu.RUnlock()
+
+	for _, handler := range handlers {
+		handler(cloneEvent(event))
+	}
+}
+
+func cloneEvent(event *Event) Event {
+	event.Frame = cloneFrame(event.Frame)
+	if len(event.MAC) > 0 {
+		event.MAC = append(net.HardwareAddr(nil), event.MAC...)
+	}
+	return *event
+}
+
+func cloneFrame(frame Frame) Frame {
+	return bytes.Clone(frame)
+}
+
+func removePortOrder(order []string, target string) []string {
+	result := order[:0]
+	for _, id := range order {
+		if id != target {
+			result = append(result, id)
+		}
+	}
+	return result
+}
+
+func deleteFDBEntriesForPort(fdb map[string]string, portID string) {
+	for mac, current := range fdb {
+		if current == portID {
+			delete(fdb, mac)
 		}
 	}
 }
 
-func (b *Bridge) Close() error {
-	b.cancel()
+func isBroadcastMAC(mac net.HardwareAddr) bool {
+	return len(mac) == 6 && bytes.Equal(mac, []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+}
 
-	b.wg.Wait()
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	for _, endpoint := range b.Connections {
-		if endpoint != nil {
-			_ = endpoint.IO.Close()
-		}
-	}
-
-	return nil
+func isMulticastMAC(mac net.HardwareAddr) bool {
+	return len(mac) > 0 && mac[0]&0x01 == 0x01
 }
 
 func htons(i uint16) uint16 {
 	return (i<<8)&0xff00 | i>>8
-}
-
-func handleSocket(packetSock int) (uintptr, error) {
-	if packetSock < 0 {
-		return 0, errors.New("invalid socket: cannot be negative")
-	}
-
-	if uint64(packetSock) > uint64(^uintptr(0)) {
-		return 0, errs.ErrSockOverflow
-	}
-
-	ptr := uintptr(packetSock) // #nosec G115 bounds are checked above
-	return ptr, nil
 }

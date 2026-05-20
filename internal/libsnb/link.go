@@ -10,7 +10,7 @@ import (
 	"github.com/vishvananda/netns"
 )
 
-func (b *Bridge) Connect(pid int, hostSideName, containerSideName string, mtu int) error {
+func AttachVethToNamespace(pid int, hostSideName, containerSideName string, mtu int) error {
 	err := SetupLinkWithNames(models.SetupLinkParams{
 		SourcePID: pid,
 		HostName:  hostSideName,

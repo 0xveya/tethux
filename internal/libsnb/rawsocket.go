@@ -1,27 +1,35 @@
 package libsnb
 
-import "net"
+import "syscall"
 
-type RawSocketIO struct {
-	Conn net.PacketConn
+type RawSocketPort struct {
+	id     string
+	mtu    int
+	fd     int
+	ifName string
 }
 
-func (r *RawSocketIO) ReadPacket() ([]byte, error) {
-	buf := make([]byte, 65536)
+func (r *RawSocketPort) ID() string {
+	return r.id
+}
 
-	n, _, err := r.Conn.ReadFrom(buf)
+func (r *RawSocketPort) MTU() int {
+	return r.mtu
+}
+
+func (r *RawSocketPort) ReadFrame() (Frame, error) {
+	buf := make([]byte, 65536)
+	n, _, err := syscall.Recvfrom(r.fd, buf, 0)
 	if err != nil {
 		return nil, err
 	}
-
 	return buf[:n], nil
 }
 
-func (r *RawSocketIO) WritePacket(data []byte) error {
-	_, err := r.Conn.WriteTo(data, nil)
-	return err
+func (r *RawSocketPort) WriteFrame(frame Frame) error {
+	return syscall.Sendto(r.fd, frame, 0, nil)
 }
 
-func (r *RawSocketIO) Close() error {
-	return r.Conn.Close()
+func (r *RawSocketPort) Close() error {
+	return syscall.Close(r.fd)
 }
