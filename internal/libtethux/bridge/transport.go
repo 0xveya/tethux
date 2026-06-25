@@ -1,4 +1,4 @@
-package libtethux
+package bridge
 
 import (
 	"fmt"

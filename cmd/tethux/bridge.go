@@ -11,14 +11,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/0xveya/tethux/internal/libtethux"
-	"github.com/0xveya/tethux/internal/libtethux/models"
+	libtethux_br "github.com/0xveya/tethux/internal/libtethux/bridge"
+	"github.com/0xveya/tethux/internal/libtethux/bridge/models"
 	"github.com/spf13/cobra"
 )
 
 type portSpec struct {
 	ID            string
-	Scheme        libtethux.AvailableScheme
+	Scheme        libtethux_br.AvailableScheme
 	Interface     string
 	Listen        string
 	Remote        string
@@ -67,7 +67,7 @@ func newBridgePortsCmd() *cobra.Command {
 				return err
 			}
 
-			sw := libtethux.NewSwitch(libtethux.SwitchOptions{
+			sw := libtethux_br.NewSwitch(libtethux_br.SwitchOptions{
 				DisableUnknownUnicastFlood: disableUnknownUnicastFlood,
 			})
 
@@ -124,17 +124,17 @@ func newBridgeContainerCmd() *cobra.Command {
 				return err
 			}
 			for _, spec := range udpPorts {
-				if spec.Scheme != libtethux.UDPScheme {
+				if spec.Scheme != libtethux_br.UDPScheme {
 					return fmt.Errorf("container bridge --port only accepts scheme=udp, got %s for %s", spec.Scheme, spec.ID)
 				}
 			}
 
-			scheme := libtethux.RawScheme
+			scheme := libtethux_br.RawScheme
 			if usePcap {
-				scheme = libtethux.PcapScheme
+				scheme = libtethux_br.PcapScheme
 			}
 
-			sw := libtethux.NewSwitch(libtethux.SwitchOptions{
+			sw := libtethux_br.NewSwitch(libtethux_br.SwitchOptions{
 				DisableUnknownUnicastFlood: disableUnknownUnicastFlood,
 			})
 
@@ -142,18 +142,18 @@ func newBridgeContainerCmd() *cobra.Command {
 			createVeth := mode == "" || mode == models.NamespaceInterfaceCreateVeth
 
 			if createVeth {
-				libtethux.CleanupLink(hostIf)
+				libtethux_br.CleanupLink(hostIf)
 			}
 			defer func() {
 				if stopErr := sw.Stop(); stopErr != nil {
 					log.Printf("switch shutdown error: %v", stopErr)
 				}
 				if createVeth {
-					libtethux.CleanupLink(hostIf)
+					libtethux_br.CleanupLink(hostIf)
 				}
 			}()
 
-			attachErr := libtethux.AttachNamespaceInterface(libtethux.NamespaceInterfaceOptions{
+			attachErr := libtethux_br.AttachNamespaceInterface(libtethux_br.NamespaceInterfaceOptions{
 				Mode:              mode,
 				PID:               pid,
 				HostSideName:      hostIf,
@@ -223,32 +223,32 @@ func newBridgeNamespaceCmd() *cobra.Command {
 				return fmt.Errorf("invalid pid-b: %w", err)
 			}
 
-			scheme := libtethux.RawScheme
+			scheme := libtethux_br.RawScheme
 			if usePcap {
-				scheme = libtethux.PcapScheme
+				scheme = libtethux_br.PcapScheme
 			}
 
 			snaplen := mtu + 32
-			sw := libtethux.NewSwitch(libtethux.SwitchOptions{})
+			sw := libtethux_br.NewSwitch(libtethux_br.SwitchOptions{})
 
-			libtethux.CleanupLink(hostA)
-			libtethux.CleanupLink(hostB)
+			libtethux_br.CleanupLink(hostA)
+			libtethux_br.CleanupLink(hostB)
 
 			defer func() {
 				if stopErr := sw.Stop(); stopErr != nil {
 					log.Printf("switch shutdown error: %v", stopErr)
 				}
-				libtethux.CleanupLink(hostA)
-				libtethux.CleanupLink(hostB)
+				libtethux_br.CleanupLink(hostA)
+				libtethux_br.CleanupLink(hostB)
 			}()
 
 			fmt.Printf("Starting namespace bridge PID %d <-> PID %d\n", pidA, pidB)
 
-			if attachErr := libtethux.AttachVethToNamespace(pidA, hostA, containerIf, mtu); attachErr != nil {
+			if attachErr := libtethux_br.AttachVethToNamespace(pidA, hostA, containerIf, mtu); attachErr != nil {
 				return fmt.Errorf("connect %s to pid %d: %w", hostA, pidA, attachErr)
 			}
 
-			if attachBErr := libtethux.AttachVethToNamespace(pidB, hostB, containerIf, mtu); attachBErr != nil {
+			if attachBErr := libtethux_br.AttachVethToNamespace(pidB, hostB, containerIf, mtu); attachBErr != nil {
 				return fmt.Errorf("connect %s to pid %d: %w", hostB, pidB, attachBErr)
 			}
 
@@ -315,7 +315,7 @@ func newBridgeUDPCmd() *cobra.Command {
 				return err
 			}
 
-			sw := libtethux.NewSwitch(libtethux.SwitchOptions{})
+			sw := libtethux_br.NewSwitch(libtethux_br.SwitchOptions{})
 			attached, err := attachSwitchPorts(sw, ports)
 			if err != nil {
 				closePorts(attached)
@@ -375,7 +375,7 @@ func parsePortSpec(raw string) (portSpec, error) {
 		return portSpec{}, fmt.Errorf("invalid port spec %q: missing id", raw)
 	}
 
-	scheme := libtethux.AvailableScheme(values["scheme"])
+	scheme := libtethux_br.AvailableScheme(values["scheme"])
 	if scheme == "" {
 		return portSpec{}, fmt.Errorf("invalid port spec %q: missing scheme", raw)
 	}
@@ -435,11 +435,11 @@ func parsePortSpec(raw string) (portSpec, error) {
 	}
 
 	switch spec.Scheme {
-	case libtethux.UDPScheme:
+	case libtethux_br.UDPScheme:
 		if spec.Listen == "" || spec.Remote == "" {
 			return portSpec{}, fmt.Errorf("udp port %s needs listen and remote", spec.ID)
 		}
-	case libtethux.RawScheme, libtethux.PcapScheme, libtethux.TAPScheme:
+	case libtethux_br.RawScheme, libtethux_br.PcapScheme, libtethux_br.TAPScheme:
 		if spec.Interface == "" {
 			return portSpec{}, fmt.Errorf("%s port %s needs if", spec.Scheme, spec.ID)
 		}
@@ -471,7 +471,7 @@ func parseUDPShorthandSpecs(specs []string, mtu int) ([]portSpec, error) {
 
 		ports = append(ports, portSpec{
 			ID:            id,
-			Scheme:        libtethux.UDPScheme,
+			Scheme:        libtethux_br.UDPScheme,
 			Listen:        listen,
 			Remote:        remote,
 			MTU:           mtu,
@@ -483,10 +483,10 @@ func parseUDPShorthandSpecs(specs []string, mtu int) ([]portSpec, error) {
 	return ports, nil
 }
 
-func attachSwitchPorts(sw *libtethux.Switch, specs []portSpec) ([]libtethux.Port, error) {
-	attached := make([]libtethux.Port, 0, len(specs))
+func attachSwitchPorts(sw *libtethux_br.Switch, specs []portSpec) ([]libtethux_br.Port, error) {
+	attached := make([]libtethux_br.Port, 0, len(specs))
 	for _, spec := range specs {
-		port, err := libtethux.NewPort(spec.Scheme, &libtethux.PortOptions{
+		port, err := libtethux_br.NewPort(spec.Scheme, &libtethux_br.PortOptions{
 			ID:            spec.ID,
 			Interface:     spec.Interface,
 			LocalAddr:     spec.Listen,
@@ -499,7 +499,7 @@ func attachSwitchPorts(sw *libtethux.Switch, specs []portSpec) ([]libtethux.Port
 			return attached, fmt.Errorf("create port %s: %w", spec.ID, err)
 		}
 		if spec.Latency > 0 {
-			port = libtethux.WithLatency(port, spec.Latency)
+			port = libtethux_br.WithLatency(port, spec.Latency)
 		}
 		if err := sw.AttachPort(port); err != nil {
 			_ = port.Close()
@@ -511,7 +511,7 @@ func attachSwitchPorts(sw *libtethux.Switch, specs []portSpec) ([]libtethux.Port
 	return attached, nil
 }
 
-func closePorts(ports []libtethux.Port) {
+func closePorts(ports []libtethux_br.Port) {
 	for _, port := range ports {
 		_ = port.Close()
 	}
@@ -527,9 +527,9 @@ func printPortSummary(title string, specs []portSpec) {
 
 	for _, spec := range ordered {
 		switch spec.Scheme {
-		case libtethux.UDPScheme:
+		case libtethux_br.UDPScheme:
 			fmt.Printf("  %s scheme=%s listen=%s remote=%s mtu=%d\n", spec.ID, spec.Scheme, spec.Listen, spec.Remote, spec.MTU)
-		case libtethux.RawScheme, libtethux.PcapScheme, libtethux.TAPScheme:
+		case libtethux_br.RawScheme, libtethux_br.PcapScheme, libtethux_br.TAPScheme:
 			fmt.Printf("  %s scheme=%s if=%s mtu=%d snaplen=%d immediate=%t latency=%s\n", spec.ID, spec.Scheme, spec.Interface, spec.MTU, spec.SnapLen, spec.ImmediateMode, spec.Latency)
 		default:
 			fmt.Printf("  %s scheme=%s\n", spec.ID, spec.Scheme)
@@ -537,7 +537,7 @@ func printPortSummary(title string, specs []portSpec) {
 	}
 }
 
-func runSwitch(sw *libtethux.Switch) error {
+func runSwitch(sw *libtethux_br.Switch) error {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigChan)

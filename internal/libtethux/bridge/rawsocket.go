@@ -1,17 +1,18 @@
-package libtethux
+package bridge
 
 import (
-	"errors"
 	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/0xveya/tethux/internal/libtethux/bridge/errs"
 )
 
-const readPollInterval = 100 * time.Millisecond
-const maxInt32 = 1<<31 - 1
-
-var errReadTimeout = errors.New("port read timeout")
+const (
+	readPollInterval = 100 * time.Millisecond
+	maxInt32         = 1<<31 - 1
+)
 
 type RawSocketPort struct {
 	id     string
@@ -43,7 +44,7 @@ func (r *RawSocketPort) ReadFrame() (Frame, error) {
 		return nil, err
 	}
 	if ready == 0 {
-		return nil, errReadTimeout
+		return nil, errs.ErrReadTimeout
 	}
 
 	buf := make([]byte, 65536)

@@ -1,4 +1,4 @@
-package libtethux
+package bridge
 
 import "github.com/google/gopacket/pcap"
 

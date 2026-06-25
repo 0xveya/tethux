@@ -1,11 +1,11 @@
-package libtethux
+package bridge
 
 import (
 	"fmt"
 	"runtime"
 
-	"github.com/0xveya/tethux/internal/libtethux/errs"
-	"github.com/0xveya/tethux/internal/libtethux/models"
+	"github.com/0xveya/tethux/internal/libtethux/bridge/errs"
+	"github.com/0xveya/tethux/internal/libtethux/bridge/models"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 )

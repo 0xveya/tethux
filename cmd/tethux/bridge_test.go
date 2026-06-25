@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0xveya/tethux/internal/libtethux"
+	libtethux_br "github.com/0xveya/tethux/internal/libtethux/bridge"
 )
 
 func TestParsePortSpecs(t *testing.T) {
@@ -21,15 +21,15 @@ func TestParsePortSpecs(t *testing.T) {
 		t.Fatalf("expected 3 ports, got %d", len(ports))
 	}
 
-	if ports[0].Scheme != libtethux.UDPScheme || ports[0].Latency != 5*time.Millisecond {
+	if ports[0].Scheme != libtethux_br.UDPScheme || ports[0].Latency != 5*time.Millisecond {
 		t.Fatalf("unexpected udp port: %#v", ports[0])
 	}
 
-	if ports[1].Scheme != libtethux.PcapScheme || ports[1].Interface != "enp0s1" || ports[1].ImmediateMode {
+	if ports[1].Scheme != libtethux_br.PcapScheme || ports[1].Interface != "enp0s1" || ports[1].ImmediateMode {
 		t.Fatalf("unexpected pcap port: %#v", ports[1])
 	}
 
-	if ports[2].Scheme != libtethux.TAPScheme || ports[2].Interface != "tap0" {
+	if ports[2].Scheme != libtethux_br.TAPScheme || ports[2].Interface != "tap0" {
 		t.Fatalf("unexpected tap port: %#v", ports[2])
 	}
 }

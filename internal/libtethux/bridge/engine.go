@@ -1,4 +1,4 @@
-package libtethux
+package bridge
 
 import (
 	"bytes"
@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/0xveya/tethux/internal/libtethux/errs"
+	"github.com/0xveya/tethux/internal/libtethux/bridge/errs"
 )
 
 const ethernetHeaderLen = 14
@@ -246,7 +246,7 @@ func (s *Switch) startReaderLocked(p Port) {
 }
 
 func isReadTimeout(err error) bool {
-	if errors.Is(err, errReadTimeout) {
+	if errors.Is(err, errs.ErrReadTimeout) {
 		return true
 	}
 

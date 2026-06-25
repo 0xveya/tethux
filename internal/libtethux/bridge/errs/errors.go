@@ -17,4 +17,5 @@ var (
 	ErrPortAlrAttached  = errors.New("port already attached")
 	ErrPortNotFound     = errors.New("port not found")
 	ErrFrameTooShort    = errors.New("frame too short")
+	ErrReadTimeout      = errors.New("port read timeout")
 )
