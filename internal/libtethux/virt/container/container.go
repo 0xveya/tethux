@@ -1,19 +1,29 @@
 package container
 
 import (
+	"context"
 	"io"
+	"net/netip"
 
 	"github.com/0xveya/tethux/internal/libtethux/virt"
+	"github.com/moby/moby/client"
 )
 
 type ContainerProvider interface {
 	virt.Provider
 
-	CreateContainer(cfg ContainerConfig) (*ContainerNode, error)
-	Pull(image, tag, registry string) error
-	Exec(id string, cmd []string) error
-	Logs(id string) (io.ReadCloser, error)
-	Inspect(id string) (*ContainerNode, error)
+	CreateContainer(ctx context.Context, cfg ContainerConfig) (*ContainerNode, error)
+	Pull(ctx context.Context, ref string, opts *client.ImagePullOptions) error
+	Exec(ctx context.Context, id string, cmd []string, execOpts *client.ExecCreateOptions, attachOpts *client.ExecAttachOptions) (stdout, stderr []byte, err error)
+	Logs(ctx context.Context, id string, opts *client.ContainerLogsOptions) (io.ReadCloser, error)
+	Inspect(ctx context.Context, id string, opts *client.ContainerInspectOptions) (*ContainerNode, error)
+
+	StartContainer(ctx context.Context, id string, opts *client.ContainerStartOptions) error
+	StopContainer(ctx context.Context, id string, opts *client.ContainerStopOptions) error
+	DeleteContainer(ctx context.Context, id string, opts *client.ContainerRemoveOptions) error
+	RestartContainer(ctx context.Context, id string, opts *client.ContainerRestartOptions) error
+	SuspendContainer(ctx context.Context, id string, opts *client.ContainerPauseOptions) error
+	ResumeContainer(ctx context.Context, id string, opts *client.ContainerUnpauseOptions) error
 }
 
 type ContainerConfig struct {
@@ -33,7 +43,7 @@ type ContainerConfig struct {
 	NetworkMode string
 
 	Hostname   string
-	DNS        []string
+	DNS        []netip.Addr
 	ExtraHosts []string
 
 	Labels map[string]string

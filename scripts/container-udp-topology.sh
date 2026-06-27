@@ -193,7 +193,7 @@ ensure_udp_ports_available
 
 echo "[1/5] starting ${N} ${RUNTIME} containers with no network"
 phase_started="$SECONDS"
-env GOCACHE="${GOCACHE:-/tmp/gocache}" go build -o "$TETHUX_BIN" ./cmd/tethux
+env GOCACHE="${GOCACHE:-/tmp/gocache}" go build -o "$TETHUX_BIN" ./cmd/bridge
 
 for i in $(seq 1 "$N"); do
   name="$(container_name "$i")"

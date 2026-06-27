@@ -27,3 +27,12 @@ run = "golangci-lint run -c .golangci.yml"
 [tasks."demo-container-udp"]
 description = "Run N containers connected by N Go switches over UDP tunnels"
 run = "sudo ./scripts/container-udp-topology.sh ${RUNTIME:-podman} ${N:-4}"
+
+[tasks.format]
+alias = "fmt"
+description = "Run all formatters ( only go for now)"
+depends = ["format-go"]
+
+[tasks."format-go"]
+description = "Format Go code with goimports and gofumpt"
+run = ["goimports -w .", "gofumpt -w .", "go mod tidy"]

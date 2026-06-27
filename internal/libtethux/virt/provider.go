@@ -1,5 +1,9 @@
 package virt
 
+import (
+	"context"
+)
+
 type ConsoleType string
 
 const (
@@ -43,30 +47,29 @@ type Node struct {
 	Name    string
 	State   NodeState
 	Console Console
-	Aux     *Console // nil if no auxiliary console
+	Aux     *Console
 }
 
 type Provider interface {
 	Name() string
 
-	Create(cfg NodeConfig) (*Node, error)
-	Start(id string) error
-	Stop(id string) error
-	Suspend(id string) error
-	Resume(id string) error
-	Delete(id string) error
+	Create(ctx context.Context, cfg *NodeConfig) (*Node, error)
+	Start(ctx context.Context, id string) error
+	Stop(ctx context.Context, id string) error
+	Suspend(ctx context.Context, id string) error
+	Resume(ctx context.Context, id string) error
+	Delete(ctx context.Context, id string) error
+	Restart(ctx context.Context, id string) error
 
-	State(id string) (NodeState, error)
-	Reload(id string) (*Node, error)
-
-	List() ([]*Node, error)
+	State(ctx context.Context, id string) (NodeState, error)
+	Reload(ctx context.Context, id string) (*Node, error)
+	List(ctx context.Context) ([]*Node, error)
 }
 
 type ServerProvider interface {
 	Provider
-
-	StartServer() error
-	StopServer() error
-	ServerRunning() bool
+	StartServer(ctx context.Context) error
+	StopServer(ctx context.Context) error
+	ServerRunning(ctx context.Context) bool
 	ServerAddr() string
 }
