@@ -1,4 +1,4 @@
-package podman
+package docker
 
 import (
 	"fmt"
@@ -10,9 +10,6 @@ import (
 	mobyimpl "github.com/0xveya/tethux/internal/libtethux/virt/container/moby"
 )
 
-// uncomment to check at compile time if methods are missing
-// var _ container.ContainerProvider = (*Podman)(nil)
-
 type Option func(*config)
 
 type config struct {
@@ -23,13 +20,13 @@ func WithSocket(s string) Option {
 	return func(c *config) { c.socketOverride = s }
 }
 
-type Podman struct {
+type Docker struct {
 	*mobyimpl.Client
 }
 
-func (p *Podman) Socket() string { return p.Client.Socket() }
+func (d *Docker) Socket() string { return d.Client.Socket() }
 
-func New(opts ...Option) (*Podman, error) {
+func New(opts ...Option) (*Docker, error) {
 	cfg := &config{}
 	for _, o := range opts {
 		o(cfg)
@@ -40,15 +37,13 @@ func New(opts ...Option) (*Podman, error) {
 		return nil, err
 	}
 
-	cli, err := mobyimpl.New("podman", socket)
+	cli, err := mobyimpl.New("docker", socket)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Podman{Client: cli}, nil
+	return &Docker{Client: cli}, nil
 }
-
-// socket resolution only below, zero business logic
 
 type socketCandidate struct {
 	label  string
@@ -58,16 +53,14 @@ type socketCandidate struct {
 func resolveSocket(cfg *config) (string, error) {
 	if cfg.socketOverride != "" {
 		if err := checkSocket(cfg.socketOverride); err != nil {
-			return "", fmt.Errorf("podman: %w: %q err: %w", errs.ErrOverrideSocketNotAccessible, cfg.socketOverride, err)
+			return "", fmt.Errorf("docker: %w: %q err: %w", errs.ErrOverrideSocketNotAccessible, cfg.socketOverride, err)
 		}
 		return cfg.socketOverride, nil
 	}
 
-	for _, env := range []string{"CONTAINER_HOST", "DOCKER_HOST"} {
-		if val := os.Getenv(env); val != "" {
-			if err := checkSocket(val); err == nil {
-				return val, nil
-			}
+	if val := os.Getenv("DOCKER_HOST"); val != "" {
+		if err := checkSocket(val); err == nil {
+			return val, nil
 		}
 	}
 
@@ -77,7 +70,7 @@ func resolveSocket(cfg *config) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("podman: %w; tried %v — is podman running? (try: podman system service --time=0)", errs.ErrNoSockerFound, socketPaths())
+	return "", fmt.Errorf("docker: %w; tried %v — is docker running?", errs.ErrNoSockerFound, socketPaths())
 }
 
 func socketCandidates() []socketCandidate {
@@ -86,33 +79,33 @@ func socketCandidates() []socketCandidate {
 	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
 		candidates = append(candidates, socketCandidate{
 			label:  "rootless/XDG_RUNTIME_DIR",
-			socket: "unix://" + filepath.Join(xdg, "podman", "podman.sock"),
+			socket: "unix://" + filepath.Join(xdg, "docker.sock"),
 		})
 	}
 
 	if uid := os.Getuid(); uid > 0 {
 		candidates = append(candidates, socketCandidate{
 			label:  "rootless/run-user",
-			socket: fmt.Sprintf("unix:///run/user/%d/podman/podman.sock", uid),
+			socket: fmt.Sprintf("unix:///run/user/%d/docker.sock", uid),
 		})
 	}
 
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates,
 			socketCandidate{
-				label:  "rootless/podman-machine-qemu",
-				socket: "unix://" + filepath.Join(home, ".local", "share", "containers", "podman", "machine", "qemu", "podman.sock"),
+				label:  "rootless/docker-desktop",
+				socket: "unix://" + filepath.Join(home, ".docker", "run", "docker.sock"),
 			},
 			socketCandidate{
-				label:  "rootless/podman-machine-default",
-				socket: "unix://" + filepath.Join(home, ".local", "share", "containers", "podman", "machine", "default", "podman.sock"),
+				label:  "rootless/docker-desktop-legacy",
+				socket: "unix://" + filepath.Join(home, ".docker", "desktop", "docker.sock"),
 			},
 		)
 	}
 
 	candidates = append(candidates,
-		socketCandidate{label: "rootful/run-podman", socket: "unix:///run/podman/podman.sock"},
-		socketCandidate{label: "rootful/var-run-podman", socket: "unix:///var/run/podman/podman.sock"},
+		socketCandidate{label: "rootful/var-run-docker", socket: "unix:///var/run/docker.sock"},
+		socketCandidate{label: "rootful/run-docker", socket: "unix:///run/docker.sock"},
 	)
 
 	return candidates

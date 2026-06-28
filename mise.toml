@@ -20,6 +20,14 @@ air = "1.62.0"
 description = "Run all linters"
 depends = ["lint-go"]
 
+[tasks.test]
+description = "Run all tests"
+depends = ["test-go"]
+
+[tasks."test-go"]
+description = "Run Go tests"
+run = "go test ./..."
+
 [tasks."lint-go"]
 description = "Run Go linter"
 run = "golangci-lint run -c .golangci.yml"
